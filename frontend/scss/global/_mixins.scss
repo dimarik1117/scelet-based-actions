@@ -1,0 +1,5 @@
+@mixin vp-767 {
+    @media (max-width: $vp-mobile) {
+        @content;
+    }
+}
