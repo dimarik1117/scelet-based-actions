@@ -1,0 +1,15 @@
+.hero__wrapper {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+    padding: 40px 0;
+    align-items: start;
+    min-height: 70vh;
+}
+
+@media (max-width: 768px) {
+    .hero__wrapper {
+        grid-template-columns: 1fr;
+        gap: 40px;
+    }
+}

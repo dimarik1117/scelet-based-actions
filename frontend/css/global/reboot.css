@@ -1,0 +1,29 @@
+* {
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+	outline: none;
+}
+
+body, html {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+    font-size: 16px;
+    line-height: 24px;
+	font-family: "Caveat", cursive;
+	color: #FFFFFF;
+	background: radial-gradient(rgb(7, 143, 255), rgb(16, 16, 176));
+}
+
+main {
+    flex-grow: 1;
+}
+
+img {
+    display: block;
+    height: auto;
+    object-fit: cover;
+    max-width: 100%;
+}

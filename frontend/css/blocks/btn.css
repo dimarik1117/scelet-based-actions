@@ -1,0 +1,36 @@
+.btn {
+    color: #FFFFFF;
+    font-size: 24px;
+    line-height: 1;
+    font-weight: 400;
+    cursor: pointer;
+    background: radial-gradient(rgb(0, 0, 219), rgb(4, 4, 83));
+    border: none;
+    border-radius: 50px;
+    border: 2px solid #FFFFFF;
+    padding: 10px 20px;
+    font-family: "Caveat", cursive;
+    transition: all 0.3s ease-out;
+    min-width: 120px;
+}
+
+.btn:hover,
+.btn:focus-visible {
+    color: rgba(255, 255, 255, 0.7);
+    border-color: rgba(255, 255, 255, 0.7);
+    transform: translateY(-2px);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn--primary {
+    background: radial-gradient(rgb(0, 219, 11), rgb(18, 83, 4));
+}
+
+.btn--secondary {
+    background: radial-gradient(rgb(219, 0, 0), rgb(83, 4, 4));
+}

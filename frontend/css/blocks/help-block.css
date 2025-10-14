@@ -1,0 +1,24 @@
+.help-block {
+    position: absolute;
+    padding: 15px;
+    flex-direction: column;
+    gap: 15px;
+    width: 320px;
+    flex-grow: 1;
+    background: radial-gradient(rgb(0, 0, 219), rgb(4, 4, 83));
+    top: 90px;
+    left: 1%;
+    border: 3px dashed white;
+    border-radius: 20px;
+    display: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: 1000;
+}
+
+.help-block__paragraph {
+    font-size: 20px;
+    line-height: 1.2;
+    font-weight: 400;
+    margin: 0;
+}
