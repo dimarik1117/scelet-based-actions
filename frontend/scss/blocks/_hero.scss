@@ -5,10 +5,8 @@
     padding: 40px 0;
     align-items: start;
     min-height: 70vh;
-}
 
-@media (max-width: 768px) {
-    .hero__wrapper {
+    @include vp-767 {
         grid-template-columns: 1fr;
         gap: 40px;
     }

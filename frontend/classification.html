@@ -42,7 +42,7 @@
 					3. Система автоматически определит вашу позу или действие в реальном времени.
 				</p>
                 <p class="help-block__paragraph">
-					4. Справа отобразится скелет позы и название распознанного действия.
+					4. Справа отобразится название распознанного действия и процент совпадения.
 				</p>
                 <p class="help-block__paragraph">
 					5. Нажмите "Остановить камеру" для прекращения работы системы.
@@ -69,19 +69,13 @@
                     
                     <div class="result">
                         <h2 class="result__title">Результат</h2>
-                        <div class="result__container">
-                            <canvas class="result__canvas" id="skeleton-canvas"></canvas>
-                            <div class="result__placeholder" id="skeleton-placeholder">
-                                <p>Скелет позы появится здесь</p>
-                            </div>
-                        </div>
                         <div class="result__prediction">
                             <p class="result__prediction-label">Текущее действие:</p>
                             <p class="result__prediction-value" id="prediction-result">Не определено</p>
-                            <div class="result__confidence-bar">
-                                <div class="result__confidence-fill" id="confidence-fill"></div>
+                            <div class="result__prediction-bar">
+                                <div class="result__prediction-fill" id="prediction-fill"></div>
                             </div>
-                            <p class="result__confidence-value" id="confidence-value">-</p>
+                            <p class="result__prediction-confidence" id="prediction-confidence">-</p>
                         </div>
                     </div>
                 </div>

@@ -1,0 +1,36 @@
+.btn {
+    color: $color-white;
+    font-size: 24px;
+    line-height: 1;
+    font-weight: 400;
+    cursor: pointer;
+    background: $color-blue;
+    border: none;
+    border-radius: 50px;
+    border: 2px solid $color-white;
+    padding: 10px 20px;
+    font-family: $ff-caveat;
+    transition: all $transiton-300-out;
+    min-width: 120px;
+
+    &:hover,
+    &:focus-visible {
+        color: $color-white-70;
+        border-color: $color-white-70;
+        transform: translateY(-2px);
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+    }
+
+    &--primary {
+        background: $color-green;
+    }
+
+    &--secondary {
+        background: $color-red;
+    }
+}
