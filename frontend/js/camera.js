@@ -36,7 +36,7 @@ class CameraManager {
 
             this.processVideo();
 
-            console.log('📸 Камера успешно запущена');
+            console.log('Камера успешно запущена');
         } catch (error) {
             console.error('Ошибка при запуске камеры:', error);
             this.handleCameraError(error);
@@ -56,7 +56,7 @@ class CameraManager {
         const ctx = this.canvasElement.getContext('2d');
         ctx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
 
-        console.log('🛑 Камера остановлена');
+        console.log('Камера остановлена');
     }
 
     updateUI(isCameraRunning) {
@@ -83,7 +83,7 @@ class CameraManager {
 
             ctx.drawImage(this.videoElement, 0, 0, this.canvasElement.width, this.canvasElement.height);
 
-            // === ✅ Отправляем кадр на backend ===
+            // === Отправляем кадр на backend ===
             await this.wsClient.sendFrame(this.canvasElement);
 
             // Можно отправлять не каждый кадр, чтобы снизить нагрузку
@@ -97,7 +97,7 @@ class CameraManager {
         });
     }
 
-    // ✅ Обновляем UI по предсказаниям
+    // Обновляем UI по предсказаниям
     onPredictionUpdate(data) {
         const ctx = this.canvasElement.getContext('2d');
         ctx.font = '20px Arial';
