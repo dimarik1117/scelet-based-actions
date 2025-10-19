@@ -1,3 +1,5 @@
+console.log("📦 ws_client.js загружен");
+
 export class WebSocketClient {
     constructor(onPredictionUpdate) {
         this.ws = null;
@@ -8,26 +10,28 @@ export class WebSocketClient {
     connect() {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
+        console.log("🔌 Попытка подключения к WebSocket...");
         this.ws = new WebSocket("ws://127.0.0.1:8000/ws/predict");
         this.ws.binaryType = "arraybuffer";
 
         this.ws.onopen = () => {
             this.isConnected = true;
-            console.log("WebSocket подключен");
+            console.log("✅ WebSocket подключен");
         };
 
-        this.ws.onclose = () => {
+        this.ws.onclose = (event) => {
             this.isConnected = false;
-            console.log("WebSocket отключен");
+            console.warn(`❌ WebSocket отключен:`, event.code, event.reason);
         };
 
-        this.ws.onerror = (e) => {
-            console.error("Ошибка WebSocket:", e);
+        this.ws.onerror = (error) => {
+            console.error("⚠️ Ошибка WebSocket:", error);
         };
 
         this.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                console.log("📩 Получено сообщение:", data);
                 if (data.type === "prediction") {
                     this.onPredictionUpdate(data);
                 }
