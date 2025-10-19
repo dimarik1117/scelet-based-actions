@@ -78,23 +78,28 @@ def home():
 
 from fastapi import WebSocket, WebSocketDisconnect
 import json
+import traceback
 
 @app.websocket("/ws/predict")
 async def websocket_endpoint(websocket: WebSocket):
-    print("Waiting for WebSocket connection...")
+    print("Ожидание WebSocket соединения...")
     await websocket.accept()
-    print("WebSocket client connected")
+    print("WebSocket клиент подключен")
 
     try:
         while True:
-            # Получаем бинарные данные (JPEG-кадр)
             frame_bytes = await websocket.receive_bytes()
 
-            # Преобразуем в OpenCV-матрицу
+            #тестовое сообщение
+            await websocket.send_text(json.dumps({
+                "type": "prediction",
+                "prediction": "TEST_OK",
+                "confidence": 1.0
+            }))
+
             np_arr = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-            # Обработка кадра моделью
             results = classifier.converter.process_frame(frame)
 
             if not results.pose_landmarks:
@@ -126,6 +131,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "prediction": action_name,
                     "confidence": float(conf)
                 }
+                print(f"Отправляю предсказание → {action_name} ({conf:.2f})")
             else:
                 payload = {
                     "type": "prediction",
@@ -136,7 +142,8 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps(payload))
 
     except WebSocketDisconnect:
-        print("WebSocket client disconnected")
+        print("WebSocket клиент отключен")
     except Exception as e:
         print("Ошибка в WebSocket:", e)
+        print(traceback.format_exc())
         await websocket.close()

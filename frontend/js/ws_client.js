@@ -10,7 +10,7 @@ export class WebSocketClient {
     connect() {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-        console.log("🔌 Попытка подключения к WebSocket...");
+        console.log("Попытка подключения к WebSocket...");
         this.ws = new WebSocket("ws://127.0.0.1:8000/ws/predict");
         this.ws.binaryType = "arraybuffer";
 
