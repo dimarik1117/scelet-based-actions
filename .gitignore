@@ -1,0 +1,8 @@
+__pycache__/
+.npy
+.npz
+.env
+.venv
+venv/
+*.npz
+*.npy
