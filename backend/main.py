@@ -17,7 +17,9 @@ app = FastAPI(title="Skeleton-based Action Recognition API")
 # Разрешаем фронтенду обращаться к API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # потом можно указать конкретно localhost:5173, если нужно
+    allow_origins=["http://127.0.0.1:5500",
+                   "http://localhost:5500"
+    ],  # потом можно указать конкретно localhost:5173, если нужно
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,6 +81,7 @@ import json
 
 @app.websocket("/ws/predict")
 async def websocket_endpoint(websocket: WebSocket):
+    print("🌐 Waiting for WebSocket connection...")
     await websocket.accept()
     print("WebSocket client connected")
 
