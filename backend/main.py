@@ -1,107 +1,92 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import base64
+import base64, io, json, traceback
 import numpy as np
 import cv2
-import io
 from PIL import Image
-import traceback
 
-# Импорт твоей модели
-from ml_realtime_inference import RealTimePoseClassifier
+# --- Импорт модели ---
+from ml_realtime_inference import RealTimePoseClassifier, predict_single_image_base64
 
-# Создаём приложение
+# --- Создание FastAPI приложения ---
 app = FastAPI(title="Skeleton-based Action Recognition API")
 
-# Разрешаем фронтенду обращаться к API
+# --- Настройка CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500",
-                   "http://localhost:5500"
-    ],  # потом можно указать конкретно localhost:5173, если нужно
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "http://localhost:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Инициализируем модель
+# --- Глобальная инициализация модели (для HTTP) ---
 print("Инициализация модели...")
-classifier = RealTimePoseClassifier()
+global_classifier = RealTimePoseClassifier()
 print("Модель загружена!")
 
 
-# Модель входных данных
+# --- Pydantic модель для POST-запросов ---
 class ImageRequest(BaseModel):
-    image: str  # base64-строка
-
-
-@app.post("/predict")
-async def predict(request: ImageRequest):
-    try:
-        # Декодируем base64 -> изображение
-        image_data = base64.b64decode(request.image.split(",")[1])
-        image = Image.open(io.BytesIO(image_data)).convert("RGB")
-        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
-        # Пропускаем через MediaPipe и модель
-        results = classifier.converter.process_frame(frame)
-
-        if not results.pose_landmarks:
-            return {"action": None, "confidence": 0.0}
-
-        # Конвертация позы и предсказание
-        ntu_skeleton = classifier.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
-        features = classifier.extract_realtime_features(ntu_skeleton)
-
-        if features is None:
-            return {"action": None, "confidence": 0.0}
-
-        pred, conf = classifier.predict_action(features)
-        pred, conf = classifier.smooth_prediction(pred, conf)
-
-        if pred is not None:
-            action_name = classifier.action_names[pred]
-            return {"action": action_name, "confidence": float(conf)}
-
-        return {"action": None, "confidence": 0.0}
-
-    except Exception as e:
-        print("Ошибка при обработке кадра:")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+    image: str  # base64 строка
 
 
 @app.get("/")
 def home():
     return {"message": "Skeleton-based Action Recognition API is running"}
 
-from fastapi import WebSocket, WebSocketDisconnect
-import json
-import traceback
+# Предсказание одиночного изображения (Postman)
+
+@app.post("/predict-image")
+async def predict_image(request: ImageRequest):
+    """
+    Endpoint для теста одиночного изображения (base64)
+    """
+    try:
+        result = predict_single_image_base64(request.image)
+        return result
+    except Exception as e:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# WebSocket для стриминга видео с фронтенда
 
 @app.websocket("/ws/predict")
 async def websocket_endpoint(websocket: WebSocket):
+    """
+    Принимает поток кадров (JPEG bytes) с фронтенда.
+    Для каждого клиента создается СВОЙ экземпляр модели,
+    чтобы буфер поз не сбрасывался между кадрами.
+    """
     print("Ожидание WebSocket соединения...")
     await websocket.accept()
-    print("WebSocket клиент подключен")
+    print("✅ WebSocket клиент подключен")
+
+    # Создаем отдельный экземпляр классификатора под клиента
+    classifier = RealTimePoseClassifier()
 
     try:
         while True:
+            # Получаем кадр (байты изображения)
             frame_bytes = await websocket.receive_bytes()
-
-            #тестовое сообщение
-            await websocket.send_text(json.dumps({
-                "type": "prediction",
-                "prediction": "TEST_OK",
-                "confidence": 1.0
-            }))
-
             np_arr = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-            results = classifier.converter.process_frame(frame)
+            if frame is None:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": "Invalid frame data"
+                }))
+                continue
 
+            # Обработка через Mediapipe
+            results = classifier.converter.process_frame(frame)
             if not results.pose_landmarks:
                 await websocket.send_text(json.dumps({
                     "type": "prediction",
@@ -110,20 +95,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
                 continue
 
+            # Конвертация позы
             ntu_skeleton = classifier.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
-            features = classifier.extract_realtime_features(ntu_skeleton)
 
+            # Извлечение признаков из буфера поз
+            features = classifier.extract_realtime_features(ntu_skeleton)
             if features is None:
-                await websocket.send_text(json.dumps({
-                    "type": "prediction",
-                    "prediction": None,
-                    "confidence": 0.0
-                }))
+                # Просто продолжаем накапливать
                 continue
 
+            # Предсказание
             pred, conf = classifier.predict_action(features)
             pred, conf = classifier.smooth_prediction(pred, conf)
 
+            # Отправка ответа на фронт
             if pred is not None:
                 action_name = classifier.action_names[pred]
                 payload = {
@@ -131,7 +116,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "prediction": action_name,
                     "confidence": float(conf)
                 }
-                print(f"Отправляю предсказание → {action_name} ({conf:.2f})")
+                print(f"Отправляю предсказание: {action_name} ({conf:.2f})")
             else:
                 payload = {
                     "type": "prediction",

@@ -251,6 +251,10 @@ class RealTimePoseClassifier:
                     self.draw_skeleton(frame, results.pose_landmarks)
 
                     # Convert to NTU format
+                    if not results.pose_landmarks:
+                        print("No pose detected in this frame.")
+                    else:
+                        print("Pose detected.")
                     ntu_skeleton = self.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
 
                     # Extract features
@@ -301,3 +305,59 @@ def test_inference():
     classifier = RealTimePoseClassifier()
     print("Inference pipeline ready!")
     return classifier
+
+# === Для предсказания по фото (просто проверка) ===
+
+import base64
+
+def predict_single_image_base64(base64_str):
+    """
+    Делает предсказание действия по одному изображению (base64).
+    Подходит для тестов через Postman.
+    """
+    try:
+        # Убираем возможный префикс data:image/...
+        if base64_str.startswith("data:image"):
+            base64_str = base64_str.split(",")[1]
+
+        # Декодируем base64
+        img_data = base64.b64decode(base64_str)
+        nparr = np.frombuffer(img_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if image is None:
+            return {"error": "Не удалось декодировать изображение"}
+
+        # MediaPipe pose
+        mp_pose = mp.solutions.pose
+        pose = mp_pose.Pose(static_image_mode=True)
+        results = pose.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+        if not results.pose_landmarks:
+            return {"action": None, "confidence": 0.0, "message": "Поза не найдена"}
+
+        # Загружаем модель
+        classifier = RealTimePoseClassifier()
+
+        # Преобразуем позу
+        ntu_skeleton = classifier.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
+
+        # Добавляем несколько копий — нужно для feature extractor
+        for _ in range(10):
+            classifier.pose_buffer.append(ntu_skeleton)
+
+        # Извлекаем признаки
+        features = classifier.extract_realtime_features(ntu_skeleton)
+        if features is None:
+            return {"action": None, "confidence": 0.0, "message": "Недостаточно данных"}
+
+        # Предсказание
+        pred, conf = classifier.predict_action(features)
+        if pred is None:
+            return {"action": None, "confidence": 0.0, "message": "Не удалось классифицировать"}
+
+        action_name = classifier.action_names[pred]
+        return {"action": action_name, "confidence": float(conf)}
+
+    except Exception as e:
+        return {"error": str(e)}
