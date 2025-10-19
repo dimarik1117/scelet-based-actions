@@ -81,7 +81,7 @@ import json
 
 @app.websocket("/ws/predict")
 async def websocket_endpoint(websocket: WebSocket):
-    print("🌐 Waiting for WebSocket connection...")
+    print("Waiting for WebSocket connection...")
     await websocket.accept()
     print("WebSocket client connected")
 

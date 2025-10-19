@@ -1,4 +1,4 @@
-console.log("📦 ws_client.js загружен");
+console.log("ws_client.js загружен");
 
 export class WebSocketClient {
     constructor(onPredictionUpdate) {
@@ -16,22 +16,22 @@ export class WebSocketClient {
 
         this.ws.onopen = () => {
             this.isConnected = true;
-            console.log("✅ WebSocket подключен");
+            console.log("WebSocket подключен");
         };
 
         this.ws.onclose = (event) => {
             this.isConnected = false;
-            console.warn(`❌ WebSocket отключен:`, event.code, event.reason);
+            console.warn(`WebSocket отключен:`, event.code, event.reason);
         };
 
         this.ws.onerror = (error) => {
-            console.error("⚠️ Ошибка WebSocket:", error);
+            console.error("Ошибка WebSocket:", error);
         };
 
         this.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                console.log("📩 Получено сообщение:", data);
+                console.log("Получено сообщение:", data);
                 if (data.type === "prediction") {
                     this.onPredictionUpdate(data);
                 }
