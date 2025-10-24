@@ -75,7 +75,22 @@ class MediaPipeToNTUConverter:
 
     def process_frame(self, frame):
         """Process a frame and return MediaPipe results"""
-        # Convert BGR to RGB
+        if frame is None or frame.size == 0:
+            return None
+
+        # Убедимся, что у кадра 3 канала (BGR)
+        if frame.shape[-1] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        # Преобразуем BGR → RGB для Mediapipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Немного уменьшаем шум (это помогает Mediapipe при видео)
+        rgb_frame = cv2.GaussianBlur(rgb_frame, (3, 3), 0)
+
         results = self.pose.process(rgb_frame)
+        if results.pose_landmarks:
+            print("Pose landmarks detected")
+        else:
+            print("No pose detected in this frame")
         return results

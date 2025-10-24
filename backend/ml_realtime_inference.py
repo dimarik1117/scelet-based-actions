@@ -313,14 +313,18 @@ import base64
 def predict_single_image_base64(base64_str):
     """
     Делает предсказание действия по одному изображению (base64).
-    Подходит для тестов через Postman.
+    Используется для тестов через Postman, когда нет доступа к камере.
     """
     try:
+        import base64, cv2, numpy as np
+        import mediapipe as mp
+        from ml_realtime_inference import RealTimePoseClassifier
+
         # Убираем возможный префикс data:image/...
         if base64_str.startswith("data:image"):
             base64_str = base64_str.split(",")[1]
 
-        # Декодируем base64
+        # Декодируем base64 -> OpenCV-изображение
         img_data = base64.b64decode(base64_str)
         nparr = np.frombuffer(img_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -328,7 +332,7 @@ def predict_single_image_base64(base64_str):
         if image is None:
             return {"error": "Не удалось декодировать изображение"}
 
-        # MediaPipe pose
+        # MediaPipe Pose
         mp_pose = mp.solutions.pose
         pose = mp_pose.Pose(static_image_mode=True)
         results = pose.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -339,10 +343,10 @@ def predict_single_image_base64(base64_str):
         # Загружаем модель
         classifier = RealTimePoseClassifier()
 
-        # Преобразуем позу
+        # Конвертация MediaPipe → NTU Skeleton
         ntu_skeleton = classifier.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
 
-        # Добавляем несколько копий — нужно для feature extractor
+        # Добавляем несколько копий, чтобы заполнить буфер
         for _ in range(10):
             classifier.pose_buffer.append(ntu_skeleton)
 
@@ -356,8 +360,10 @@ def predict_single_image_base64(base64_str):
         if pred is None:
             return {"action": None, "confidence": 0.0, "message": "Не удалось классифицировать"}
 
+        # Получаем имя действия
         action_name = classifier.action_names[pred]
         return {"action": action_name, "confidence": float(conf)}
 
     except Exception as e:
-        return {"error": str(e)}
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
