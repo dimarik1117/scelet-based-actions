@@ -1,3 +1,4 @@
+// camera.js
 import { WebSocketClient } from "./ws_client.js";
 
 class CameraManager {
@@ -9,10 +10,15 @@ class CameraManager {
     this.stream = null;
     this.isCameraActive = false;
 
+    // callback will receive backend data
     this.wsClient = new WebSocketClient((data) => this.onPredictionUpdate(data));
     this.wsClient.connect();
 
     this.initEventListeners();
+    // skeleton styling
+    this.jointRadius = 5;
+    this.jointColor = "lime";
+    this.boneColor = "cyan";
   }
 
   initEventListeners() {
@@ -22,20 +28,18 @@ class CameraManager {
 
   async startCamera() {
     try {
+      // try to wait for WS before starting camera to avoid frames getting queued
+      console.log("Запуск камеры и подключение к WebSocket...");
+      await this.wsClient.waitForConnection(5000);
+      console.log("WS подключён, запускаем камеру");
+
       this.stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        }
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
       });
 
       this.videoElement.srcObject = this.stream;
       this.isCameraActive = true;
       this.updateUI(true);
-
-      // Подождём пока WebSocket подключится перед отправкой кадров
-      await this.wsClient.waitForConnection();
 
       this.processVideo();
       console.log('Камера успешно запущена');
@@ -55,7 +59,7 @@ class CameraManager {
     this.updateUI(false);
 
     const ctx = this.canvasElement.getContext('2d');
-    ctx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
+    if (ctx) ctx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
     console.log('Камера остановлена');
   }
 
@@ -72,56 +76,119 @@ class CameraManager {
   }
 
   processVideo() {
-  if (!this.isCameraActive) return;
-  const ctx = this.canvasElement.getContext('2d');
-
-  const waitForVideoReady = () => new Promise((resolve) => {
-    if (this.videoElement.videoWidth > 0 && this.videoElement.videoHeight > 0) {
-      resolve();
-    } else {
-      this.videoElement.addEventListener('loadeddata', () => resolve(), { once: true });
-    }
-  });
-
-  const drawFrame = async () => {
     if (!this.isCameraActive) return;
-    ctx.drawImage(this.videoElement, 0, 0, this.canvasElement.width, this.canvasElement.height);
-    await this.wsClient.sendFrame(this.canvasElement);
-    setTimeout(() => requestAnimationFrame(drawFrame), 500);
-  };
+    const ctx = this.canvasElement.getContext('2d', { willReadFrequently: true });
 
-  waitForVideoReady().then(() => {
-    this.canvasElement.width = this.videoElement.videoWidth;
-    this.canvasElement.height = this.videoElement.videoHeight;
-    console.log("Видео готово, начинаем передачу кадров...");
-    drawFrame();
-  });
-}
+    const waitForVideoReady = () => new Promise((resolve) => {
+      if (this.videoElement.videoWidth > 0 && this.videoElement.videoHeight > 0) resolve();
+      else this.videoElement.addEventListener('loadeddata', () => resolve(), { once: true });
+    });
 
-  // Обновляем UI по предсказаниям
-  onPredictionUpdate(data) {
+    const drawFrame = async () => {
+      if (!this.isCameraActive) return;
+      // draw current video frame to canvas
+      ctx.drawImage(this.videoElement, 0, 0, this.canvasElement.width, this.canvasElement.height);
+
+      // send frame to backend
+      await this.wsClient.sendFrame(this.canvasElement);
+
+      // schedule next frame (control rate with setTimeout)
+      setTimeout(() => requestAnimationFrame(drawFrame), 120); // ~8 fps — adjust if you want faster
+    };
+
+    waitForVideoReady().then(() => {
+      this.canvasElement.width = this.videoElement.videoWidth;
+      this.canvasElement.height = this.videoElement.videoHeight;
+      console.log("🎞 Видео готово, начинаем передачу кадров...");
+      drawFrame();
+    });
+  }
+
+  // draw skeleton received from backend
+  drawSkeletonOnCanvas(skeleton) {
+    if (!skeleton || !Array.isArray(skeleton)) return;
     const ctx = this.canvasElement.getContext('2d');
-    // небольшой резерв: если canvas пуст — ничего не рисуем
     if (!ctx) return;
 
-    ctx.font = '20px Arial';
-    ctx.fillStyle = 'red';
+    // draw joints
+    ctx.save();
+    try {
+      // draw small translucent background for text
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(0, 0, 420, 36);
 
-    const text = data && data.prediction
-      ? `Действие: ${data.prediction} (${(data.confidence * 100).toFixed(1)}%)`
-      : 'Нет действия';
+      // bones pairs for NTU (approx)
+      const bonePairs = [
+        [0,1],[1,20],[20,2],[2,3],
+        [2,4],[4,5],[5,6],[6,7],[6,21],[6,22],
+        [2,8],[8,9],[9,10],[10,11],[10,23],[10,24],
+        [0,12],[12,13],[13,14],[14,15],
+        [0,16],[16,17],[17,18],[18,19]
+      ];
 
-    // Стираем место сверху, чтобы не накладывалось
-    ctx.clearRect(0, 0, 400, 40);
-    ctx.fillText(text, 10, 30);
+      // draw bones
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = this.boneColor;
+      for (let [a,b] of bonePairs) {
+        const p1 = skeleton[a];
+        const p2 = skeleton[b];
+        if (!p1 || !p2) continue;
+        ctx.beginPath();
+        ctx.moveTo(p1[0], p1[1]);
+        ctx.lineTo(p2[0], p2[1]);
+        ctx.stroke();
+      }
 
-    // Обновим элементы в правой панели (если они есть)
+      // draw joints
+      for (let i=0;i<skeleton.length;i++){
+        const p = skeleton[i];
+        if (!p) continue;
+        ctx.beginPath();
+        ctx.fillStyle = this.jointColor;
+        ctx.arc(p[0], p[1], this.jointRadius, 0, 2*Math.PI);
+        ctx.fill();
+        // small label
+        ctx.fillStyle = "white";
+        ctx.font = "12px Arial";
+        ctx.fillText(String(i), p[0]+6, p[1]-6);
+      }
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  // Called whenever ws_client gets new prediction object
+  onPredictionUpdate(data) {
+    // Expecting backend message with keys: prediction, confidence, fps, skeleton, top3
+    if (!data) return;
+    // draw skeleton overlay (skeleton is list of [x,y] or null)
+    if (data.skeleton) {
+      this.drawSkeletonOnCanvas(data.skeleton);
+    }
+
+    // show top text and fill UI elements
+    const ctx = this.canvasElement.getContext('2d');
+    if (ctx) {
+      ctx.font = '18px Arial';
+      ctx.fillStyle = 'white';
+      const pred = data.prediction || '—';
+      const conf = (typeof data.confidence === 'number') ? `${(data.confidence*100).toFixed(1)}%` : '-';
+      const fps = data.fps || '-';
+      // clear top-left area and draw
+      ctx.clearRect(0, 0, 420, 36);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, 0, 420, 36);
+      ctx.fillStyle = '#00FF00';
+      ctx.fillText(`Action: ${pred} (${conf})  FPS:${fps}`, 8, 22);
+    }
+
+    // update side panel if exists
     const resultEl = document.getElementById('prediction-result');
     const fillEl = document.getElementById('prediction-fill');
     const confEl = document.getElementById('prediction-confidence');
-    if (resultEl) resultEl.textContent = data && data.prediction ? data.prediction : 'Не определено';
-    if (confEl) confEl.textContent = data && typeof data.confidence === 'number' ? `${(data.confidence*100).toFixed(1)}%` : '-';
-    if (fillEl && data && typeof data.confidence === 'number') {
+    if (resultEl) resultEl.textContent = data.prediction || 'Не определено';
+    if (confEl) confEl.textContent = (typeof data.confidence === 'number') ? `${(data.confidence*100).toFixed(1)}%` : '-';
+    if (fillEl && typeof data.confidence === 'number') {
       const pct = Math.min(100, Math.max(0, Math.round(data.confidence * 100)));
       fillEl.style.width = `${pct}%`;
     }

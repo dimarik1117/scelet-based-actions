@@ -1,3 +1,4 @@
+// ws_client.js
 console.log("ws_client.js загружен");
 
 export class WebSocketClient {
@@ -14,7 +15,6 @@ export class WebSocketClient {
     this.ws = new WebSocket("ws://127.0.0.1:8000/ws/predict");
     this.ws.binaryType = "arraybuffer";
 
-    // промис для ожидания подключения
     this._connectPromise = new Promise((resolve) => {
       this._connectPromiseResolve = resolve;
     });
@@ -31,7 +31,7 @@ export class WebSocketClient {
     this.ws.onclose = (event) => {
       this.isConnected = false;
       console.warn("WebSocket отключен:", event.code, event.reason);
-      // Попробуем переподключиться через 1s
+      // reconnect
       setTimeout(() => this.connect(), 1000);
     };
 
@@ -41,22 +41,18 @@ export class WebSocketClient {
 
     this.ws.onmessage = (event) => {
       try {
-        // ожидаем текстовый JSON
+        // if binary — try to decode as text
         const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
         const data = JSON.parse(text);
-        // console.log("Получено сообщение от backend:", data);
-        if (data && data.type === "prediction") {
+        if (this.onPredictionUpdate && typeof this.onPredictionUpdate === "function") {
           this.onPredictionUpdate(data);
-        } else if (data && data.type === "error") {
-          console.warn("Backend error message:", data);
         }
       } catch (err) {
-        console.error("Ошибка парсинга WS-сообщения:", err);
+        console.error("Ошибка парсинга WS-сообщения:", err, event);
       }
     };
   }
 
-  // ожидание установки соединения (используется фронтом)
   waitForConnection(timeoutMs = 5000) {
     if (this.isConnected) return Promise.resolve();
     if (this._connectPromise) {
@@ -65,7 +61,6 @@ export class WebSocketClient {
         new Promise((_, reject) => setTimeout(() => reject(new Error("WS connection timeout")), timeoutMs))
       ]);
     }
-    // если connect ещё не вызывался — вызываем и ждём
     this.connect();
     return this.waitForConnection(timeoutMs);
   }
@@ -79,15 +74,12 @@ export class WebSocketClient {
   }
 
   async sendFrame(canvas) {
-    console.log("Отправка кадра через WS...");
+    // send canvas contents as compressed jpeg via WebSocket
     if (!this.isConnected || !canvas || !this.ws) return;
     return new Promise((resolve) => {
       canvas.toBlob(async (blob) => {
         if (!blob) return resolve();
         try {
-          // уменьшаем качество до 0.4 чтобы снизить нагрузку
-          // blob уже в формате image/png/jpeg в зависимости от toBlob вызова — но toBlob не принимает качество для png
-          // поэтому используем canvas.toBlob с типом и качеством выше (в CameraManager мы вызываем sendFrame с canvas)
           const arrayBuffer = await blob.arrayBuffer();
           this.ws.send(arrayBuffer);
         } catch (err) {
@@ -95,7 +87,7 @@ export class WebSocketClient {
         } finally {
           resolve();
         }
-      }, "image/jpeg", 0.4); // качество 0.4 — компромисс скорость/качество
+      }, "image/jpeg", 0.4);
     });
   }
 }

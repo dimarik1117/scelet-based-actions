@@ -1,159 +1,114 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import base64
-import json
-import traceback
-import numpy as np
+# main.py
+import io
 import cv2
-import os
+import time
+import numpy as np
+import asyncio
+import json
+import logging
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketState
+from realtime_classifier import RealTimePoseClassifier
 
-# Импортируем только RealTimePoseClassifier (функцию predict по base64 реализуем здесь)
-from ml_realtime_inference import RealTimePoseClassifier
+# Logging
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("backend")
 
-app = FastAPI(title="Skeleton-based Action Recognition API")
+app = FastAPI(title="Scelet-Based Actions Backend")
 
+# Allow frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://localhost:5173",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-print("Инициализация модели...")
-try:
-    global_classifier = RealTimePoseClassifier()
-    print("Модель загружена!")
-except Exception as e:
-    print("Ошибка при инициализации модели:", e)
-    raise
-
-class ImageRequest(BaseModel):
-    image: str  # base64 строки
-
-@app.get("/")
-def home():
-    return {"message": "Skeleton-based Action Recognition API is running"}
-
-# POST для теста через Postman (использует глобальный classifier)
-@app.post("/predict-image")
-async def predict_image(request: ImageRequest):
-    try:
-        result = predict_single_image_base64_from_classifier(request.image, global_classifier)
-        return result
-    except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
-def predict_single_image_base64_from_classifier(base64_str: str, classifier: RealTimePoseClassifier):
-    """
-    Предсказание для одного изображения (base64). Используем уже загруженный classifier.
-    """
-    try:
-        if base64_str.startswith("data:image"):
-            base64_str = base64_str.split(",", 1)[1]
-
-        img_data = base64.b64decode(base64_str)
-        nparr = np.frombuffer(img_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if image is None:
-            return {"error": "Не удалось декодировать изображение"}
-
-        results = classifier.converter.process_frame(image)
-        if not results or not getattr(results, "pose_landmarks", None):
-            return {"action": None, "confidence": 0.0, "message": "Поза не найдена"}
-
-        ntu_skeleton = classifier.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
-
-        for _ in range(10):
-            classifier.pose_buffer.append(ntu_skeleton)
-
-        features = classifier.extract_realtime_features(ntu_skeleton)
-        if features is None or len(features) == 0:
-            return {"action": None, "confidence": 0.0, "message": "Недостаточно данных"}
-
-        pred, conf = classifier.predict_action(features)
-        if pred is None:
-            return {"action": None, "confidence": 0.0, "message": "Не удалось классифицировать"}
-
-        action_name = classifier.action_names[pred] if pred < len(classifier.action_names) else str(pred)
-        return {"action": action_name, "confidence": float(conf)}
-    except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
+logger.info("Loading model...")
+classifier = RealTimePoseClassifier(model_path="models/ntu_npy", min_buffer_size=8)
+logger.info("Model loaded successfully!")
 
 @app.websocket("/ws/predict")
-async def websocket_endpoint(websocket: WebSocket):
-    print("Ожидание WebSocket соединения...")
+async def predict_ws(websocket: WebSocket):
     await websocket.accept()
-    print("WebSocket клиент подключен")
-    classifier = global_classifier
+    logger.info("Client connected to /ws/predict")
+
+    fps_window = []
+    frame_counter = 0
     try:
         while True:
-            # Получаем бинарные данные (JPEG кадр)
+            # receive binary frame (frontend sends image/jpeg arraybuffer)
             frame_bytes = await websocket.receive_bytes()
             np_arr = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if frame is None:
-                await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": "Invalid frame data"
-                }))
+                logger.warning("Received frame could not be decoded")
                 continue
 
-            results = classifier.converter.process_frame(frame)
-            if not results or not getattr(results, "pose_landmarks", None):
-                classifier.pose_buffer.clear()
-                payload = {
-                    "type": "prediction",
-                    "prediction": None,
-                    "confidence": 0.0
-                }
-                print("Отправка предсказания:", payload)
-                await websocket.send_text(json.dumps(payload))
-                continue
+            frame_counter += 1
+            start_time = time.time()
 
-            ntu_skeleton = classifier.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
-            features = classifier.extract_realtime_features(ntu_skeleton)
-            if features is None:
-                payload = {
-                    "type": "prediction",
-                    "prediction": None,
-                    "confidence": 0.0
-                }
-                print("Отправка предсказания:", payload)
-                await websocket.send_text(json.dumps(payload))
-                continue
+            # process frame -> get NTU skeleton (25,3) and pixel joints (list of (x,y) or None)
+            ntu_skeleton, pixel_joints, debug = classifier.process_single_frame(frame)
 
-            pred, conf = classifier.predict_action(features)
-            pred, conf = classifier.smooth_prediction(pred, conf)
-            if pred is not None:
-                action_name = classifier.action_names[pred] if pred < len(classifier.action_names) else str(pred)
-                payload = {
-                    "type": "prediction",
-                    "prediction": action_name,
-                    "confidence": float(conf)
-                }
+            prediction_text = "no_pose"
+            conf = 0.0
+            top3 = None
+
+            if ntu_skeleton is not None:
+                # run model pipeline that uses buffer inside classifier
+                try:
+                    pred_idx, conf_val, top3 = classifier.predict_from_skeleton(ntu_skeleton)
+                    conf = float(conf_val or 0.0)
+                    if pred_idx is not None and pred_idx < len(classifier.action_names):
+                        prediction_text = classifier.action_names[pred_idx]
+                    elif pred_idx is not None:
+                        prediction_text = f"class_{pred_idx}"
+                    else:
+                        prediction_text = "unknown"
+                except Exception as e:
+                    logger.error(f"Prediction exception: {e}")
+                    prediction_text = "error"
             else:
-                payload = {
-                    "type": "prediction",
-                    "prediction": None,
-                    "confidence": 0.0
-                }
+                logger.info(f"No skeleton detected: {debug}")
 
-            print("Отправка предсказания:", payload)
-            await websocket.send_text(json.dumps(payload))
+            # compute FPS
+            elapsed = time.time() - start_time
+            fps = 1.0 / (elapsed + 1e-8)
+            fps_window.append(fps)
+            if len(fps_window) > 10:
+                fps_window.pop(0)
+            avg_fps = sum(fps_window) / len(fps_window)
+
+            # Build message: keep keys simple for frontend
+            msg = {
+                "type": "prediction",
+                "prediction": prediction_text,
+                "confidence": round(float(conf), 3),
+                "fps": round(avg_fps, 2),
+                # send pixel joints as list of [x,y] or null (so frontend can draw)
+                "skeleton": [[int(x), int(y)] if (x is not None and y is not None) else None for (x, y) in (pixel_joints or [])],
+                "top3": top3
+            }
+
+            # send if connected
+            if websocket.application_state == WebSocketState.CONNECTED:
+                await websocket.send_json(msg)
+
+            # small sleep to avoid busy-loop; frontend sends at its own rate
+            await asyncio.sleep(0.02)
 
     except WebSocketDisconnect:
-        print("WebSocket клиент отключен")
+        logger.warning("Client disconnected (WebSocketDisconnect)")
     except Exception as e:
-        print("Ошибка в WebSocket:", e)
-        print(traceback.format_exc())
+        logger.exception(f"Error: {e}")
         try:
-            await websocket.close()
-        except Exception:
+            await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))
+        except:
             pass
+    finally:
+        if websocket.application_state == WebSocketState.CONNECTED:
+            await websocket.close()
+        logger.info("WebSocket handler finished")
