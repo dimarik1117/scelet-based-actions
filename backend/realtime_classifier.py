@@ -1,10 +1,11 @@
-# realtime_classifier.py
+# realtime_classifier.py (with run_realtime_demo)
 import os
 import pickle
 import cv2
 import numpy as np
 from collections import deque
 import logging
+import mediapipe as mp
 from converter import MediaPipeToNTUConverter
 from feature_extractor import NTUProcessedFeatureExtractor
 
@@ -21,7 +22,6 @@ class RealTimePoseClassifier:
         try:
             with open(model_file, "rb") as f:
                 self.svm_model = pickle.load(f)
-            # scaler may or may not be present; load if exists but we'll not force using it
             if os.path.exists(scaler_file):
                 try:
                     with open(scaler_file, "rb") as f:
@@ -52,30 +52,27 @@ class RealTimePoseClassifier:
             self.expected_feature_length = None
 
         self.min_buffer_size = max(3, int(min_buffer_size))
-        self.use_scaler = bool(use_scaler)  # by default False for realtime amplitude preservation
+        self.use_scaler = bool(use_scaler)
         logger.info(f"Expected feature length: {self.expected_feature_length}")
         logger.info(f"min_buffer_size={self.min_buffer_size}, buffer_max={self.pose_buffer.maxlen}, use_scaler={self.use_scaler}")
 
-    # frame -> ntu + pixel joints(API preserved)
+        # MediaPipe drawing helpers
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.mp_pose = mp.solutions.pose
+
     def process_single_frame(self, frame):
-        """
-        Input: BGR frame (numpy)
-        Returns:
-            ntu_skeleton (25,3) normalized (centered/scaled) or None,
-            pixel_joints: list of 25 (x,y) pixel coords (or (None,None) if missing),
-            debug_info string
-        """
         try:
             h, w = frame.shape[:2]
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.converter.pose.process(rgb)
 
             if not results.pose_landmarks:
-                return None, None, "mediapipe_no_landmarks"
+                return None, None, None
 
-            ntu = self.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks)
+            ntu = self.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks.landmark)
             normalized = self.converter.normalize_skeleton(ntu)
 
+            # Pixel joints computed for potential overlay (not used for centered NTU draw)
             mapping = self.converter.create_correct_joint_mapping()
             pixel_joints = []
             lm = results.pose_landmarks.landmark
@@ -90,6 +87,18 @@ class RealTimePoseClassifier:
                         elif j == 1:
                             lx = (lm[23].x + lm[24].x + lm[11].x + lm[12].x) / 4.0
                             ly = (lm[23].y + lm[24].y + lm[11].y + lm[12].y) / 4.0
+                            pixel_joints.append((lx * w, ly * h))
+                        elif j == 20:
+                            shoulder_x = (lm[11].x + lm[12].x) / 2.0
+                            shoulder_y = (lm[11].y + lm[12].y) / 2.0
+                            hip_x = (lm[23].x + lm[24].x) / 2.0
+                            hip_y = (lm[23].y + lm[24].y) / 2.0
+                            lx = shoulder_x * 0.3 + hip_x * 0.7
+                            ly = shoulder_y * 0.3 + hip_y * 0.7
+                            pixel_joints.append((lx * w, ly * h))
+                        elif j == 2:
+                            lx = (lm[11].x + lm[12].x) / 2.0
+                            ly = (lm[11].y + lm[12].y) / 2.0
                             pixel_joints.append((lx * w, ly * h))
                         else:
                             lx = lm[0].x
@@ -109,17 +118,13 @@ class RealTimePoseClassifier:
                 else:
                     pixel_joints.append((None, None))
 
-            return normalized.astype(np.float32), pixel_joints, "ok"
+            return normalized.astype(np.float32), pixel_joints, results.pose_landmarks
 
         except Exception as e:
             logger.exception("process_single_frame_error")
-            return None, None, f"process_single_frame_error: {e}"
+            return None, None, None
 
-    # create sequence & features
     def create_simple_sequence(self):
-        """
-        Build (300,150) sequence with last frames placed at end (person2 zeros)
-        """
         if len(self.pose_buffer) == 0:
             return None
         seq = np.zeros((300, 150), dtype=np.float32)
@@ -137,60 +142,36 @@ class RealTimePoseClassifier:
         return seq
 
     def extract_simple_features(self, ntu_skeleton):
-        """
-        Append skeleton to buffer and extract features using training extractor.
-        If extractor fails, use fallback minimal features.
-        """
         if ntu_skeleton is None:
             return None
-
         try:
             ntu_skeleton = np.array(ntu_skeleton, dtype=np.float32).reshape(25, 3)
         except Exception:
             logger.warning("Invalid ntu_skeleton shape when extracting features")
             return None
-
-        # append
         self.pose_buffer.append(ntu_skeleton)
         logger.info(f"Skeleton detected with variance: {np.var(ntu_skeleton):.6f}")
         logger.info(f"Buffer length: {len(self.pose_buffer)}")
-        if len(self.pose_buffer) >= 2:
-            last = np.array(self.pose_buffer[-1]).reshape(25,3)
-            prev = np.array(self.pose_buffer[-2]).reshape(25,3)
-            dif = np.linalg.norm(last - prev, axis=1)
-            logger.info(f"Δ между последним буфером и новым: {np.mean(dif):.4f}")
-
         if len(self.pose_buffer) < self.min_buffer_size:
             logger.info(f"Waiting for buffer to fill: {len(self.pose_buffer)}/{self.min_buffer_size}")
             return None
-
         sequence = self.create_simple_sequence()
         if sequence is None:
             return None
-
-        # Try extracting features using extractor used in training
         try:
             if hasattr(self.feature_extractor, "extract_features_from_sequence"):
                 features = self.feature_extractor.extract_features_from_sequence(sequence)
-            elif hasattr(self.feature_extractor, "extract_from_sequence"):
-                features = self.feature_extractor.extract_from_sequence(sequence)
             else:
-                if hasattr(self.feature_extractor, "extract_features"):
-                    features = self.feature_extractor.extract_features(sequence)
-                else:
-                    raise AttributeError("No valid feature extraction method on extractor")
+                raise AttributeError("No valid feature extraction method on extractor")
             if features is None or (hasattr(features, "__len__") and len(features) == 0):
                 raise ValueError("Feature extractor returned empty features")
         except Exception as e:
             logger.warning(f"Feature extractor failed or missing methods: {e}. Using fallback minimal features.")
             features = self._fallback_minimal_features(sequence)
-
         try:
             features = np.array(features, dtype=np.float32).flatten()
         except Exception:
             features = np.zeros(self.expected_feature_length or 300, dtype=np.float32)
-
-        # pad/trim to expected length if scaler expected it (keeps compatibility)
         if self.expected_feature_length:
             if len(features) < self.expected_feature_length:
                 padded = np.zeros(self.expected_feature_length, dtype=np.float32)
@@ -198,12 +179,8 @@ class RealTimePoseClassifier:
                 features = padded
             else:
                 features = features[:self.expected_feature_length]
-
-        # safety: NaN/Inf -> 0
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-
         logger.info(f"Raw features length: {len(features)} min/max: ({np.min(features):.4f},{np.max(features):.4f}) mean:{np.mean(features):.4f}")
-
         return features
 
     def _fallback_minimal_features(self, sequence):
@@ -216,7 +193,6 @@ class RealTimePoseClassifier:
                 main = np.expand_dims(main, axis=0)
             except:
                 return np.zeros(100, dtype=np.float32)
-
         frames = []
         if main.shape[0] >= 3:
             frames_idx = [0, main.shape[0]//2, -1]
@@ -225,7 +201,6 @@ class RealTimePoseClassifier:
         else:
             for i in range(min(3, main.shape[0])):
                 frames.append(main[i])
-
         features = []
         for f in frames:
             features.extend(f.flatten().tolist())
@@ -236,26 +211,18 @@ class RealTimePoseClassifier:
                     features.append(np.linalg.norm(vec))
                 else:
                     features.append(0.0)
-
         if len(features) < 300:
             features.extend([0.0] * (300 - len(features)))
         else:
             features = features[:300]
         return np.array(features, dtype=np.float32)
 
-    # prediction
     def predict_from_skeleton(self, ntu_skeleton):
-        """
-        Given a single ntu_skeleton, produce (pred_idx, confidence, top3)
-        Uses buffer-based features prepared by extract_simple_features
-        """
         features = self.extract_simple_features(ntu_skeleton)
         if features is None:
             return None, 0.0, None
-
         try:
             X = np.array(features).reshape(1, -1)
-            # scaling: use scaler only if explicitly enabled and available
             if self.use_scaler and hasattr(self, "scaler") and self.scaler is not None:
                 try:
                     X_scaled = self.scaler.transform(X)
@@ -264,23 +231,106 @@ class RealTimePoseClassifier:
                     X_scaled = X
             else:
                 X_scaled = X
-
             try:
                 logger.info(f"Feature stats after scaling - min:{np.min(X_scaled):.4f} max:{np.max(X_scaled):.4f} mean:{np.mean(X_scaled):.4f}")
             except:
                 pass
-
             probs = self.svm_model.predict_proba(X_scaled)[0]
             pred = int(np.argmax(probs))
             conf = float(np.max(probs))
-
             top3_idx = np.argsort(probs)[-3:][::-1]
             top3 = [(self.action_names[i] if i < len(self.action_names) else f"class_{i}", float(probs[i])) for i in top3_idx]
-
             logger.info(f"Top-3 predictions: {top3}")
             logger.info(f"Predicted: {self.action_names[pred] if pred < len(self.action_names) else f'class_{pred}'} (idx={pred}) conf={conf:.3f}")
-
             return pred, conf, top3
         except Exception as e:
             logger.exception(f"Prediction error: {e}")
             return None, 0.0, None
+
+    # Visualization helpers (centered NTU skeleton like old pipeline)
+    def visualize_centered_ntu(self, frame, normalized_skeleton):
+        """Draw NTU skeleton centered in the middle of the frame (old behavior)."""
+        if normalized_skeleton is None:
+            return frame
+        h, w = frame.shape[:2]
+        display = normalized_skeleton.copy().astype(np.float32)
+        # compute spine length (in normalized units) to scale for display
+        try:
+            spine_len = np.linalg.norm(display[2] - display[0])
+            if spine_len == 0:
+                spine_len = 1.0
+        except:
+            spine_len = 1.0
+        # scale to occupy a good portion of the frame (similar to old code)
+        scale_factor = min(h, w) * 0.8 / (spine_len + 1e-9)
+        display *= scale_factor
+        # center to image center
+        display[:, 0] += w // 2
+        display[:, 1] += h // 2
+        # draw joints and bones
+        bone_pairs = self.feature_extractor.bone_pairs
+        for i, joint in enumerate(display):
+            x, y, _ = joint
+            if np.isfinite(x) and np.isfinite(y) and 0 <= x < w and 0 <= y < h:
+                cv2.circle(frame, (int(x), int(y)), 6, (0, 255, 0), -1)
+                cv2.putText(frame, str(i), (int(x), int(y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+        for a, b in bone_pairs:
+            if a < len(display) and b < len(display):
+                p1 = display[a]
+                p2 = display[b]
+                if np.all(np.isfinite(p1)) and np.all(np.isfinite(p2)):
+                    x1, y1, _ = p1
+                    x2, y2, _ = p2
+                    if 0 <= x1 < w and 0 <= y1 < h and 0 <= x2 < w and 0 <= y2 < h:
+                        cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0,255,255), 3)
+        return frame
+
+    def run_realtime_demo(self, camera_index=0):
+        """Run webcam demo drawing MediaPipe landmarks + centered NTU skeleton (old visual)."""
+        print("Starting realtime demo (press q to quit, r to reset buffer)...")
+        cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            print("Cannot open camera")
+            return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        last_time = cv2.getTickCount()
+        fps = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            norm, pixel_joints, pose_landmarks = self.process_single_frame(frame)
+            # Draw MediaPipe landmarks (full 33 points) if available
+            if pose_landmarks is not None:
+                try:
+                    self.mp_drawing.draw_landmarks(frame, pose_landmarks, self.mp_pose.POSE_CONNECTIONS, mp.solutions.drawing_styles.get_default_pose_landmarks_style().landmark_drawing_spec, mp.solutions.drawing_styles.get_default_pose_landmarks_style().connection_drawing_spec)
+                except Exception:
+                    pass
+            # Draw centered NTU skeleton (old-style visualization)
+            frame = self.visualize_centered_ntu(frame, norm)
+            # show FPS
+            current = cv2.getTickCount()
+            dt = (current - last_time) / cv2.getTickFrequency()
+            if dt > 0:
+                fps = 0.9 * fps + 0.1 * (1.0 / dt) if fps else (1.0 / dt)
+            last_time = current
+            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            cv2.imshow("Real-time Pose Classification (MediaPipe + NTU)", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('r'):
+                self.pose_buffer.clear()
+                self.prediction_buffer.clear()
+                print("Buffer reset")
+        cap.release()
+        cv2.destroyAllWindows()
+        print("Demo ended")
+
+if __name__ == "__main__":
+    try:
+        classifier = RealTimePoseClassifier(min_buffer_size=3)
+        classifier.run_realtime_demo()
+    except Exception as e:
+        print(f"Error starting demo: {e}")

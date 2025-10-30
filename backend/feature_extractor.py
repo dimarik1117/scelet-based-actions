@@ -48,12 +48,10 @@ class NTUProcessedFeatureExtractor:
         action = self.extract_robust_action_features(valid_frames)
         features.extend(action)
 
-        # дополнительно: дельта между первым и последним кадром (чувствительность к направлению)
         try:
             delta = (valid_frames[-1] - valid_frames[0]).flatten().tolist()
             features.extend(delta)
         except Exception:
-            # если не получается, игнорируем
             pass
 
         features_array = np.array(features, dtype=np.float32)
@@ -64,7 +62,6 @@ class NTUProcessedFeatureExtractor:
         self.extraction_stats['successful_extractions'] += 1
         return features_array
 
-    # Минимальный фолбэк
     def extract_minimal_features(self, valid_frames):
         features = []
         if len(valid_frames) == 0:
@@ -86,7 +83,6 @@ class NTUProcessedFeatureExtractor:
 
         return np.array(features, dtype=np.float32)
 
-    # Пространственные признаки
     def extract_robust_spatial_features(self, valid_frames):
         features = []
         frame_indices = [0, len(valid_frames)//2, -1]
@@ -102,14 +98,11 @@ class NTUProcessedFeatureExtractor:
 
     def extract_spatial_features(self, skeleton_frame):
         features = []
-
-        # raw flattened coords (25*3)
         try:
             features.extend(skeleton_frame.flatten().tolist())
         except Exception:
             features.extend([0.0] * (25*3))
 
-        # bone vectors + relative lengths
         for j1, j2 in self.bone_pairs:
             if (j1 < len(skeleton_frame) and j2 < len(skeleton_frame) and
                 np.any(skeleton_frame[j1] != 0) and np.any(skeleton_frame[j2] != 0)):
@@ -127,7 +120,6 @@ class NTUProcessedFeatureExtractor:
             else:
                 features.extend([0.0, 0.0, 0.0, 0.0])
 
-        # distances from pelvis (0) to key joints
         key_joints = [3, 7, 11, 15, 19]
         spine_base = skeleton_frame[0]
         for joint_idx in key_joints:
@@ -142,8 +134,6 @@ class NTUProcessedFeatureExtractor:
         features.extend(angles)
 
         return features
-
-    # Временные признаки
 
     def extract_robust_temporal_features(self, valid_frames):
         features = []
@@ -220,7 +210,6 @@ class NTUProcessedFeatureExtractor:
         except:
             return [0.0, 0.0]
 
-    # Статистические признаки
     def extract_robust_statistical_features(self, valid_frames):
         features = []
         if len(valid_frames) == 0:
@@ -253,7 +242,6 @@ class NTUProcessedFeatureExtractor:
             features.extend([0.0] * (30 - len(features)))
         return features
 
-    # Action-specific features
     def extract_robust_action_features(self, valid_frames):
         features = []
         try:
@@ -332,7 +320,6 @@ class NTUProcessedFeatureExtractor:
         except:
             return [0.0, 0.0]
 
-    # Helpers
     def get_valid_frames(self, sequence):
         frame_has_data = np.any(sequence != 0, axis=(1,2))
         valid_indices = np.where(frame_has_data)[0]

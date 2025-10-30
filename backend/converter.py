@@ -11,11 +11,9 @@ class MediaPipeToNTUConverter:
             model_complexity=1,
             smooth_landmarks=True,
             enable_segmentation=False,
-            min_detection_confidence=0.4,
-            min_tracking_confidence=0.4
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
-        # фиксированный масштаб (устанавливается при первом валидном кадре)
-        self._initial_scale = None
 
     def create_correct_joint_mapping(self):
         """
@@ -26,10 +24,10 @@ class MediaPipeToNTUConverter:
             # SPINE CHAIN (4 joints)
             0: self.calculate_pelvis,      # pelvis - calculated from hips
             1: self.calculate_middle_spine, # middle_of_spine - calculated
-            20: self.calculate_spine,      # spine - calculated  
+            20: self.calculate_spine,      # spine - calculated
             2: self.calculate_neck,   # neck - using midpoint between shoulders (MediaPipe 11,12)
             3: 0,    # head - NOSE (0)
-            
+
             # LEFT ARM (6 joints)
             4: 11,   # left_shoulder - LEFT_SHOULDER (11)
             5: 13,   # left_elbow - LEFT_ELBOW (13)
@@ -37,7 +35,7 @@ class MediaPipeToNTUConverter:
             7: 19,   # left_hand - LEFT_PINKY (19) - closest approximation
             21: 17,  # tip_left_hand - LEFT_INDEX (17)
             22: 21,  # left_thumb - LEFT_THUMB (21)
-            
+
             # RIGHT ARM (6 joints)
             8: 12,   # right_shoulder - RIGHT_SHOULDER (12)
             9: 14,   # right_elbow - RIGHT_ELBOW (14)
@@ -45,13 +43,13 @@ class MediaPipeToNTUConverter:
             11: 20,  # right_hand - RIGHT_PINKY (20) - closest approximation
             23: 18,  # tip_right_hand - RIGHT_INDEX (18)
             24: 22,  # right_thumb - RIGHT_THUMB (22)
-            
+
             # LEFT LEG (4 joints)
             12: 23,  # left_hip - LEFT_HIP (23)
             13: 25,  # left_knee - LEFT_KNEE (25)
             14: 27,  # left_ankle - LEFT_ANKLE (27)
             15: 31,  # left_foot - LEFT_FOOT_INDEX (31)
-            
+
             # RIGHT LEG (4 joints)
             16: 24,  # right_hip - RIGHT_HIP (24)
             17: 26,  # right_knee - RIGHT_KNEE (26)
@@ -94,18 +92,26 @@ class MediaPipeToNTUConverter:
 
         for ntu_joint, mp_reference in mapping.items():
             if callable(mp_reference):
-                ntu_skeleton[ntu_joint] = mp_reference(landmarks.landmark)
-            elif mp_reference < len(landmarks.landmark):
-                landmark = landmarks.landmark[mp_reference]
-                ntu_skeleton[ntu_joint] = [landmark.x, landmark.y, landmark.z]
+                ntu_skeleton[ntu_joint] = mp_reference(landmarks)
+            elif isinstance(mp_reference, int) and mp_reference < len(landmarks):
+                lm = landmarks[mp_reference]
+                ntu_skeleton[ntu_joint] = np.array([lm.x, lm.y, lm.z])
+            else:
+                ntu_skeleton[ntu_joint] = np.array([0.0, 0.0, 0.0])
 
         return ntu_skeleton
 
     def normalize_skeleton(self, skeleton):
+        """
+        Normalize skeleton similar to old pipeline:
+        - Center at pelvis
+        - Scale by spine length computed for each frame (not fixed)
+        This restores compatibility with the model trained on old pipeline.
+        """
         pelvis = skeleton[0].copy()
         centered_skeleton = skeleton - pelvis
 
-        # try to compute spine length for scale
+        # compute spine length per-frame
         try:
             spine_base = centered_skeleton[0]
             spine_top = centered_skeleton[2]
@@ -113,26 +119,22 @@ class MediaPipeToNTUConverter:
         except Exception:
             spine_length = None
 
-        # Если масштаб ещё не зафиксирован — фиксируем его по первому валидному кадру
-        if self._initial_scale is None:
-            if spine_length is not None and spine_length > 1e-4:
-                self._initial_scale = spine_length
-            else:
-                # fallback — расстояние между плечами и тазом
-                try:
-                    left_shoulder = skeleton[11]
-                    right_shoulder = skeleton[12]
-                    left_hip = skeleton[23]
-                    right_hip = skeleton[24]
-                    alt_len = np.linalg.norm((left_shoulder + right_shoulder) / 2 - (left_hip + right_hip) / 2)
-                    self._initial_scale = alt_len if alt_len > 1e-4 else 1.0
-                except Exception:
-                    self._initial_scale = 1.0
-
-        if self._initial_scale is None or self._initial_scale <= 1e-6:
-            scaled_skeleton = centered_skeleton
+        if spine_length is not None and spine_length > 1e-4:
+            scaled_skeleton = centered_skeleton / (spine_length + 1e-9)
         else:
-            scaled_skeleton = centered_skeleton / (self._initial_scale + 1e-9)
+            # fallback to shoulder-hip distance
+            try:
+                left_shoulder = skeleton[11]
+                right_shoulder = skeleton[12]
+                left_hip = skeleton[23]
+                right_hip = skeleton[24]
+                alt_len = np.linalg.norm(((left_shoulder + right_shoulder) / 2) - ((left_hip + right_hip) / 2))
+                if alt_len > 1e-4:
+                    scaled_skeleton = centered_skeleton / (alt_len + 1e-9)
+                else:
+                    scaled_skeleton = centered_skeleton
+            except Exception:
+                scaled_skeleton = centered_skeleton
 
         return scaled_skeleton
 
@@ -141,6 +143,6 @@ class MediaPipeToNTUConverter:
         results = self.pose.process(rgb_frame)
         if not results.pose_landmarks:
             return None, None
-        ntu_skeleton = self.mediapipe_to_ntu_skeleton(results.pose_landmarks)
+        ntu_skeleton = self.mediapipe_to_ntu_skeleton(results.pose_landmarks.landmark)
         normalized_skeleton = self.normalize_skeleton(ntu_skeleton)
         return normalized_skeleton, results.pose_landmarks
