@@ -1,7 +1,7 @@
 .camera {
     display: flex;
     flex-direction: column;
-    gap: 25px;
+    gap: 20px;
     align-items: center;
 
     &__title {
@@ -14,7 +14,8 @@
     &__container {
         position: relative;
         width: 100%;
-        max-width: 500px;
+        height: 480px;
+        max-width: 640px;
         border: 3px solid $color-white;
         border-radius: 15px;
         overflow: hidden;
@@ -26,20 +27,35 @@
     }
 
     &__video {
-        width: 100%;
-        height: auto;
+        width: 640px;
+        height: 480px;
         display: block;
-        transform: scaleX(-1);
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 0;
     }
 
     &__canvas {
-        width: 100%;
-        height: auto;
+        width: 640px;
+        height: 480px;
         display: block;
         position: absolute;
         top: 0;
         left: 0;
         pointer-events: none;
+        z-index: 1;
+    }
+
+    &__canvas-overlay {
+        width: 640px;
+        height: 480px;
+        display: block;
+        position: absolute;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+        z-index: 2;
     }
 
     &__controls {

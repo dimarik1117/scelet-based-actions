@@ -5,6 +5,7 @@ class CameraManager {
   constructor() {
     this.videoElement = document.getElementById('camera-video');
     this.canvasElement = document.getElementById('camera-canvas');
+    this.overlayCanvas = document.getElementById('canvas-overlay');
     this.startButton = document.getElementById('btn-start-camera');
     this.stopButton = document.getElementById('btn-stop-camera');
     this.stream = null;
@@ -58,8 +59,16 @@ class CameraManager {
     this.isCameraActive = false;
     this.updateUI(false);
 
-    const ctx = this.canvasElement.getContext('2d');
-    if (ctx) ctx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
+    // Очистка всех canvas
+    const clearCanvas = (id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const ctx = el.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, el.width, el.height);
+    };
+
+    clearCanvas('camera-canvas');
+    clearCanvas('canvas-overlay');
     console.log('Камера остановлена');
   }
 
@@ -86,19 +95,27 @@ class CameraManager {
 
     const drawFrame = async () => {
       if (!this.isCameraActive) return;
+
+      ctx.save();                  // сохранить текущую трансформацию
+      ctx.translate(this.canvasElement.width, 0); // сдвинуть по X на ширину канваса
+      ctx.scale(-1, 1);            // зеркально по X
+
       // draw current video frame to canvas
       ctx.drawImage(this.videoElement, 0, 0, this.canvasElement.width, this.canvasElement.height);
+      ctx.restore();
 
       // send frame to backend
       await this.wsClient.sendFrame(this.canvasElement);
 
       // schedule next frame (control rate with setTimeout)
-      setTimeout(() => requestAnimationFrame(drawFrame), 120); // ~8 fps — adjust if you want faster
+      setTimeout(() => requestAnimationFrame(drawFrame), 150); // ~7 fps — adjust if you want faster
     };
 
     waitForVideoReady().then(() => {
       this.canvasElement.width = this.videoElement.videoWidth;
       this.canvasElement.height = this.videoElement.videoHeight;
+      this.overlayCanvas.width = this.videoElement.videoWidth;
+      this.overlayCanvas.height = this.videoElement.videoHeight;
       console.log("🎞 Видео готово, начинаем передачу кадров...");
       drawFrame();
     });
@@ -107,7 +124,8 @@ class CameraManager {
   // draw skeleton received from backend
   drawSkeletonOnCanvas(skeleton) {
     if (!skeleton || !Array.isArray(skeleton)) return;
-    const ctx = this.canvasElement.getContext('2d');
+    const ctx = this.overlayCanvas.getContext('2d');
+    ctx.clearRect(0,0,this.overlayCanvas.width,this.overlayCanvas.height);
     if (!ctx) return;
 
     // draw joints
@@ -167,7 +185,7 @@ class CameraManager {
     }
 
     // show top text and fill UI elements
-    const ctx = this.canvasElement.getContext('2d');
+    const ctx = this.overlayCanvas.getContext('2d');
     if (ctx) {
       ctx.font = '18px Arial';
       ctx.fillStyle = 'white';
