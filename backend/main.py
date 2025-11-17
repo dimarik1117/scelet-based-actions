@@ -50,8 +50,8 @@ async def predict_ws(websocket: WebSocket):
             frame_counter += 1
             start_time = time.time()
 
-            # process frame -> get NTU skeleton (25,3) and pixel joints (list of (x,y) or None)
-            ntu_skeleton, pixel_joints, debug = classifier.process_single_frame(frame)
+            # process frame -> get normalized NTU skeleton (25,3), ntu_pixels (25), mp_pixels (33)
+            ntu_skeleton, ntu_pixels, mp_pixels, pose_landmarks = classifier.process_single_frame(frame)
 
             prediction_text = "no_pose"
             conf = 0.0
@@ -72,7 +72,7 @@ async def predict_ws(websocket: WebSocket):
                     logger.error(f"Prediction exception: {e}")
                     prediction_text = "error"
             else:
-                logger.info(f"No skeleton detected: {debug}")
+                logger.info("No skeleton detected in frame")
 
             # compute FPS
             elapsed = time.time() - start_time
@@ -82,14 +82,15 @@ async def predict_ws(websocket: WebSocket):
                 fps_window.pop(0)
             avg_fps = sum(fps_window) / len(fps_window)
 
-            # Build message: keep keys simple for frontend
+            # Build message
             msg = {
                 "type": "prediction",
                 "prediction": prediction_text,
                 "confidence": round(float(conf), 3),
                 "fps": round(avg_fps, 2),
-                # send pixel joints as list of [x,y] or null (so frontend can draw)
-                "skeleton": [[int(x), int(y)] if (x is not None and y is not None) else None for (x, y) in (pixel_joints or [])],
+                # NTU-centered skeleton (25) and MediaPipe skeleton (33)
+                "skeleton": ntu_pixels if ntu_pixels is not None else [None]*25,
+                "mp_skeleton": mp_pixels if mp_pixels is not None else [None]*33,
                 "top3": top3
             }
 
@@ -112,3 +113,7 @@ async def predict_ws(websocket: WebSocket):
         if websocket.application_state == WebSocketState.CONNECTED:
             await websocket.close()
         logger.info("WebSocket handler finished")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info")

@@ -1,4 +1,4 @@
-# realtime_classifier.py (with run_realtime_demo)
+# realtime_classifier.py
 import os
 import pickle
 import cv2
@@ -27,6 +27,7 @@ class RealTimePoseClassifier:
                     with open(scaler_file, "rb") as f:
                         self.scaler = pickle.load(f)
                 except Exception:
+                    logger.warning("Failed to load scaler, continuing without it")
                     self.scaler = None
             else:
                 self.scaler = None
@@ -60,70 +61,155 @@ class RealTimePoseClassifier:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_pose = mp.solutions.pose
 
+    # ---------------------------
+    # Helper: MP landmarks -> pixel coords (33 points)
+    # ---------------------------
+    def mediapipe_landmarks_to_pixels(self, landmarks, frame_width, frame_height):
+        """
+        landmarks: list-like of 33 mp.landmark entries
+        returns list length 33 with [x,y] ints or None when invalid
+        """
+        mp_pixels = []
+        try:
+            for lm in landmarks:
+                if lm is None:
+                    mp_pixels.append(None)
+                    continue
+                x = lm.x * frame_width
+                y = lm.y * frame_height
+                if np.isfinite(x) and np.isfinite(y):
+                    mp_pixels.append([int(round(float(x))), int(round(float(y)))])
+                else:
+                    mp_pixels.append(None)
+        except Exception:
+            mp_pixels = [None] * 33
+        while len(mp_pixels) < 33:
+            mp_pixels.append(None)
+        return mp_pixels
+
+    # ---------------------------
+    # Helper: normalized NTU -> centered pixel coords (25 points)
+    # ---------------------------
+    def ntu_normalized_to_pixels(self, normalized_skeleton, frame_width, frame_height, visual_scale=0.8):
+        if normalized_skeleton is None:
+            return [None] * 25
+        try:
+            display = normalized_skeleton.copy().astype(np.float32)
+            try:
+                spine_len = np.linalg.norm(display[2] - display[0])
+            except Exception:
+                spine_len = 0.0
+            h, w = frame_height, frame_width
+            if spine_len > 1e-6:
+                scale_factor = min(h, w) * visual_scale / (spine_len + 1e-9)
+            else:
+                scale_factor = min(h, w) * (visual_scale * 0.5)
+            display *= scale_factor
+            cx = w // 2
+            cy = h // 2
+            display[:, 0] += cx
+            display[:, 1] += cy
+            pixel_joints = []
+            for i in range(display.shape[0]):
+                x = display[i, 0]
+                y = display[i, 1]
+                if (np.isfinite(x) and np.isfinite(y) and 0 <= x < w and 0 <= y < h):
+                    pixel_joints.append([int(round(float(x))), int(round(float(y)))])
+                else:
+                    pixel_joints.append(None)
+            while len(pixel_joints) < 25:
+                pixel_joints.append(None)
+            return pixel_joints
+        except Exception as e:
+            logger.exception("ntu_normalized_to_pixels_error")
+            return [None] * 25
+
+    # ---------------------------
+    # Utility: swap symmetric landmark indices if labeling is inverted
+    # ---------------------------
+    def correct_left_right_landmarks(self, lm_list):
+        """
+        lm_list: list-like of mp Landmarks (length >= 33)
+        If shoulders appear swapped (left.x > right.x), create corrected copy where
+        symmetric pairs are swapped to ensure anatomical left is left on image.
+        Returns possibly-new list (same objects) of landmarks for downstream consumption.
+        NOTE: We don't modify original object in place; we create a shallow copy of landmarks.
+        """
+        # Ensure we have enough landmarks
+        if lm_list is None or len(lm_list) < 33:
+            return lm_list
+
+        # Primary check: shoulders
+        try:
+            left_sh = lm_list[11]
+            right_sh = lm_list[12]
+            if left_sh is None or right_sh is None:
+                return lm_list
+            # If left_sh.x is greater than right_sh.x, then labeling is inverted horizontally
+            if left_sh.x > right_sh.x:
+                # list of symmetric index pairs to swap
+                symmetric_pairs = [
+                    (11, 12),  # shoulders
+                    (13, 14),  # elbows
+                    (15, 16),  # wrists
+                    (17, 18),  # index tips
+                    (19, 20),  # pinky tips
+                    (21, 22),  # thumbs
+                    (23, 24),  # hips
+                    (25, 26),  # knees
+                    (27, 28),  # ankles
+                    (31, 32)   # foot indices
+                ]
+                # create shallow copy
+                corrected = list(lm_list)
+                for a, b in symmetric_pairs:
+                    # guard indices within range
+                    if a < len(corrected) and b < len(corrected):
+                        corrected[a], corrected[b] = corrected[b], corrected[a]
+                logger.debug("Landmark left/right swap applied to correct flipped labeling.")
+                return corrected
+        except Exception:
+            return lm_list
+
+        return lm_list
+
+    # ---------------------------
+    # Main frame processor: returns normalized NTU, ntu pixels, mp pixels, landmarks
+    # ---------------------------
     def process_single_frame(self, frame):
         try:
             h, w = frame.shape[:2]
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.converter.pose.process(rgb)
 
-            if not results.pose_landmarks:
-                return None, None, None
+            if results is None or not results.pose_landmarks:
+                return None, None, None, None
 
-            ntu = self.converter.mediapipe_to_ntu_skeleton(results.pose_landmarks.landmark)
+            # mp landmarks list
+            mp_landmarks = results.pose_landmarks.landmark
+
+            # Correct possible left/right label flips by spatial test
+            corrected_landmarks = self.correct_left_right_landmarks(mp_landmarks)
+
+            # MP pixel coords (33) computed from corrected landmarks
+            mp_pixels = self.mediapipe_landmarks_to_pixels(corrected_landmarks, frame_width=w, frame_height=h)
+
+            # NTU conversion (25x3) from corrected MP landmarks
+            ntu = self.converter.mediapipe_to_ntu_skeleton(corrected_landmarks)
             normalized = self.converter.normalize_skeleton(ntu)
 
-            # Pixel joints computed for potential overlay (not used for centered NTU draw)
-            mapping = self.converter.create_correct_joint_mapping()
-            pixel_joints = []
-            lm = results.pose_landmarks.landmark
-            for j in range(25):
-                ref = mapping.get(j)
-                if callable(ref):
-                    try:
-                        if j == 0:
-                            lx = (lm[23].x + lm[24].x) / 2.0
-                            ly = (lm[23].y + lm[24].y) / 2.0
-                            pixel_joints.append((lx * w, ly * h))
-                        elif j == 1:
-                            lx = (lm[23].x + lm[24].x + lm[11].x + lm[12].x) / 4.0
-                            ly = (lm[23].y + lm[24].y + lm[11].y + lm[12].y) / 4.0
-                            pixel_joints.append((lx * w, ly * h))
-                        elif j == 20:
-                            shoulder_x = (lm[11].x + lm[12].x) / 2.0
-                            shoulder_y = (lm[11].y + lm[12].y) / 2.0
-                            hip_x = (lm[23].x + lm[24].x) / 2.0
-                            hip_y = (lm[23].y + lm[24].y) / 2.0
-                            lx = shoulder_x * 0.3 + hip_x * 0.7
-                            ly = shoulder_y * 0.3 + hip_y * 0.7
-                            pixel_joints.append((lx * w, ly * h))
-                        elif j == 2:
-                            lx = (lm[11].x + lm[12].x) / 2.0
-                            ly = (lm[11].y + lm[12].y) / 2.0
-                            pixel_joints.append((lx * w, ly * h))
-                        else:
-                            lx = lm[0].x
-                            ly = lm[0].y
-                            pixel_joints.append((lx * w, ly * h))
-                    except Exception:
-                        pixel_joints.append((None, None))
-                elif isinstance(ref, int):
-                    if ref < len(lm):
-                        l = lm[ref]
-                        try:
-                            pixel_joints.append((l.x * w, l.y * h))
-                        except Exception:
-                            pixel_joints.append((None, None))
-                    else:
-                        pixel_joints.append((None, None))
-                else:
-                    pixel_joints.append((None, None))
+            # NTU-centered pixel joints (25)
+            ntu_pixels = self.ntu_normalized_to_pixels(normalized, frame_width=w, frame_height=h)
 
-            return normalized.astype(np.float32), pixel_joints, results.pose_landmarks
+            return normalized.astype(np.float32), ntu_pixels, mp_pixels, results.pose_landmarks
 
         except Exception as e:
             logger.exception("process_single_frame_error")
-            return None, None, None
+            return None, None, None, None
 
+    # ---------------------------
+    # Sequence creation, features, prediction (unchanged)
+    # ---------------------------
     def create_simple_sequence(self):
         if len(self.pose_buffer) == 0:
             return None
@@ -150,10 +236,9 @@ class RealTimePoseClassifier:
             logger.warning("Invalid ntu_skeleton shape when extracting features")
             return None
         self.pose_buffer.append(ntu_skeleton)
-        logger.info(f"Skeleton detected with variance: {np.var(ntu_skeleton):.6f}")
-        logger.info(f"Buffer length: {len(self.pose_buffer)}")
+        logger.debug(f"Buffer length: {len(self.pose_buffer)}")
         if len(self.pose_buffer) < self.min_buffer_size:
-            logger.info(f"Waiting for buffer to fill: {len(self.pose_buffer)}/{self.min_buffer_size}")
+            logger.debug(f"Waiting for buffer to fill: {len(self.pose_buffer)}/{self.min_buffer_size}")
             return None
         sequence = self.create_simple_sequence()
         if sequence is None:
@@ -180,7 +265,6 @@ class RealTimePoseClassifier:
             else:
                 features = features[:self.expected_feature_length]
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-        logger.info(f"Raw features length: {len(features)} min/max: ({np.min(features):.4f},{np.max(features):.4f}) mean:{np.mean(features):.4f}")
         return features
 
     def _fallback_minimal_features(self, sequence):
@@ -231,43 +315,32 @@ class RealTimePoseClassifier:
                     X_scaled = X
             else:
                 X_scaled = X
-            try:
-                logger.info(f"Feature stats after scaling - min:{np.min(X_scaled):.4f} max:{np.max(X_scaled):.4f} mean:{np.mean(X_scaled):.4f}")
-            except:
-                pass
             probs = self.svm_model.predict_proba(X_scaled)[0]
             pred = int(np.argmax(probs))
             conf = float(np.max(probs))
             top3_idx = np.argsort(probs)[-3:][::-1]
             top3 = [(self.action_names[i] if i < len(self.action_names) else f"class_{i}", float(probs[i])) for i in top3_idx]
-            logger.info(f"Top-3 predictions: {top3}")
-            logger.info(f"Predicted: {self.action_names[pred] if pred < len(self.action_names) else f'class_{pred}'} (idx={pred}) conf={conf:.3f}")
             return pred, conf, top3
         except Exception as e:
             logger.exception(f"Prediction error: {e}")
             return None, 0.0, None
 
-    # Visualization helpers (centered NTU skeleton like old pipeline)
     def visualize_centered_ntu(self, frame, normalized_skeleton):
         """Draw NTU skeleton centered in the middle of the frame (old behavior)."""
         if normalized_skeleton is None:
             return frame
         h, w = frame.shape[:2]
         display = normalized_skeleton.copy().astype(np.float32)
-        # compute spine length (in normalized units) to scale for display
         try:
             spine_len = np.linalg.norm(display[2] - display[0])
             if spine_len == 0:
                 spine_len = 1.0
         except:
             spine_len = 1.0
-        # scale to occupy a good portion of the frame (similar to old code)
         scale_factor = min(h, w) * 0.8 / (spine_len + 1e-9)
         display *= scale_factor
-        # center to image center
         display[:, 0] += w // 2
         display[:, 1] += h // 2
-        # draw joints and bones
         bone_pairs = self.feature_extractor.bone_pairs
         for i, joint in enumerate(display):
             x, y, _ = joint
@@ -286,7 +359,6 @@ class RealTimePoseClassifier:
         return frame
 
     def run_realtime_demo(self, camera_index=0):
-        """Run webcam demo drawing MediaPipe landmarks + centered NTU skeleton (old visual)."""
         print("Starting realtime demo (press q to quit, r to reset buffer)...")
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
@@ -300,16 +372,13 @@ class RealTimePoseClassifier:
             ret, frame = cap.read()
             if not ret:
                 break
-            norm, pixel_joints, pose_landmarks = self.process_single_frame(frame)
-            # Draw MediaPipe landmarks (full 33 points) if available
+            norm, ntu_pixels, mp_pixels, pose_landmarks = self.process_single_frame(frame)
             if pose_landmarks is not None:
                 try:
                     self.mp_drawing.draw_landmarks(frame, pose_landmarks, self.mp_pose.POSE_CONNECTIONS, mp.solutions.drawing_styles.get_default_pose_landmarks_style().landmark_drawing_spec, mp.solutions.drawing_styles.get_default_pose_landmarks_style().connection_drawing_spec)
                 except Exception:
                     pass
-            # Draw centered NTU skeleton (old-style visualization)
             frame = self.visualize_centered_ntu(frame, norm)
-            # show FPS
             current = cv2.getTickCount()
             dt = (current - last_time) / cv2.getTickFrequency()
             if dt > 0:
@@ -327,6 +396,7 @@ class RealTimePoseClassifier:
         cap.release()
         cv2.destroyAllWindows()
         print("Demo ended")
+
 
 if __name__ == "__main__":
     try:

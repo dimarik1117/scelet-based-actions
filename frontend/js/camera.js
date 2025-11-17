@@ -29,7 +29,7 @@ class CameraManager {
 
   async startCamera() {
     try {
-      // try to wait for WS before starting camera to avoid frames getting queued
+      // wait for WS before starting camera to avoid frames getting queued
       console.log("Запуск камеры и подключение к WebSocket...");
       await this.wsClient.waitForConnection(5000);
       console.log("WS подключён, запускаем камеру");
@@ -96,9 +96,10 @@ class CameraManager {
     const drawFrame = async () => {
       if (!this.isCameraActive) return;
 
-      ctx.save();                  // сохранить текущую трансформацию
-      ctx.translate(this.canvasElement.width, 0); // сдвинуть по X на ширину канваса
-      ctx.scale(-1, 1);            // зеркально по X
+      // mirror the video when drawing to canvas so user sees selfie view
+      ctx.save();
+      ctx.translate(this.canvasElement.width, 0);
+      ctx.scale(-1, 1);
 
       // draw current video frame to canvas
       ctx.drawImage(this.videoElement, 0, 0, this.canvasElement.width, this.canvasElement.height);
@@ -112,6 +113,7 @@ class CameraManager {
     };
 
     waitForVideoReady().then(() => {
+      // match canvas sizes to video
       this.canvasElement.width = this.videoElement.videoWidth;
       this.canvasElement.height = this.videoElement.videoHeight;
       this.overlayCanvas.width = this.videoElement.videoWidth;
@@ -122,20 +124,69 @@ class CameraManager {
   }
 
   // draw skeleton received from backend
-  drawSkeletonOnCanvas(skeleton) {
-    if (!skeleton || !Array.isArray(skeleton)) return;
+  drawSkeletonOnCanvas(skeleton, mpSkeleton=null) {
     const ctx = this.overlayCanvas.getContext('2d');
     ctx.clearRect(0,0,this.overlayCanvas.width,this.overlayCanvas.height);
     if (!ctx) return;
 
-    // draw joints
     ctx.save();
     try {
       // draw small translucent background for text
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.fillRect(0, 0, 420, 36);
 
-      // bones pairs for NTU (approx)
+      // If mpSkeleton provided (33 points) prefer to draw it — it matches MediaPipe demo
+      if (mpSkeleton && Array.isArray(mpSkeleton) && mpSkeleton.length >= 33) {
+        // Draw an expanded set of MP connections including requested facial links and both-hand links
+        const mpPairs = [
+          // arms: shoulder (11/12) -> elbow -> wrist
+          [11,13],[13,15],[12,14],[14,16],
+          [11,12], // shoulders
+          // torso -> hips (approx)
+          [11,23],[12,24],[23,24],
+          // legs (approx)
+          [23,25],[25,27],[24,26],[26,28],
+          // head/neck chain
+          [0,1],[1,2],[2,3],
+          // Additional face connections previously requested:
+          [8,6],[6,5],[5,4],      // 8-6-5-4
+          [4,0],[0,1],           // 4-0-1
+          [1,2],[2,3],[3,7],     // 1-2-3-7
+          [9,10],                // 9-10
+          // Hand connections (right hand set earlier)
+          [16,18],[16,20],[16,22],[18,20],
+          // Mirror for left hand (added now)
+          [15,17],[15,19],[15,21],[17,19]
+        ];
+
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = this.boneColor;
+        for (let [a,b] of mpPairs) {
+          const p1 = mpSkeleton[a];
+          const p2 = mpSkeleton[b];
+          if (!p1 || !p2) continue;
+          ctx.beginPath();
+          ctx.moveTo(p1[0], p1[1]);
+          ctx.lineTo(p2[0], p2[1]);
+          ctx.stroke();
+        }
+        // draw joints
+        for (let i=0;i<mpSkeleton.length;i++){
+          const p = mpSkeleton[i];
+          if (!p) continue;
+          ctx.beginPath();
+          ctx.fillStyle = this.jointColor;
+          ctx.arc(p[0], p[1], this.jointRadius, 0, 2*Math.PI);
+          ctx.fill();
+          ctx.fillStyle = "white";
+          ctx.font = "12px Arial";
+          ctx.fillText(String(i), p[0]+6, p[1]-6);
+        }
+        return;
+      }
+
+      // fallback: draw NTU skeleton (25) as before
+      if (!skeleton || !Array.isArray(skeleton)) return;
       const bonePairs = [
         [0,1],[1,20],[20,2],[2,3],
         [2,4],[4,5],[5,6],[6,7],[6,21],[6,22],
@@ -143,7 +194,6 @@ class CameraManager {
         [0,12],[12,13],[13,14],[14,15],
         [0,16],[16,17],[17,18],[18,19]
       ];
-
       // draw bones
       ctx.lineWidth = 2;
       ctx.strokeStyle = this.boneColor;
@@ -156,7 +206,6 @@ class CameraManager {
         ctx.lineTo(p2[0], p2[1]);
         ctx.stroke();
       }
-
       // draw joints
       for (let i=0;i<skeleton.length;i++){
         const p = skeleton[i];
@@ -165,7 +214,6 @@ class CameraManager {
         ctx.fillStyle = this.jointColor;
         ctx.arc(p[0], p[1], this.jointRadius, 0, 2*Math.PI);
         ctx.fill();
-        // small label
         ctx.fillStyle = "white";
         ctx.font = "12px Arial";
         ctx.fillText(String(i), p[0]+6, p[1]-6);
@@ -177,14 +225,13 @@ class CameraManager {
 
   // Called whenever ws_client gets new prediction object
   onPredictionUpdate(data) {
-    // Expecting backend message with keys: prediction, confidence, fps, skeleton, top3
     if (!data) return;
-    // draw skeleton overlay (skeleton is list of [x,y] or null)
-    if (data.skeleton) {
-      this.drawSkeletonOnCanvas(data.skeleton);
-    }
+    // Prefer drawing mp_skeleton if available (matches MediaPipe local demo)
+    const mpSk = data.mp_skeleton || null;
+    const ntuSk = data.skeleton || null;
+    this.drawSkeletonOnCanvas(ntuSk, mpSk);
 
-    // show top text and fill UI elements
+    // draw prediction text and fill UI elements
     const ctx = this.overlayCanvas.getContext('2d');
     if (ctx) {
       ctx.font = '18px Arial';
