@@ -10,6 +10,7 @@ class CameraManager {
     this.stopButton = document.getElementById('btn-stop-camera');
     this.stream = null;
     this.isCameraActive = false;
+    this.shouldDraw = false; // Флаг для контроля отрисовки
 
     // callback will receive backend data
     this.wsClient = new WebSocketClient((data) => this.onPredictionUpdate(data));
@@ -40,6 +41,7 @@ class CameraManager {
 
       this.videoElement.srcObject = this.stream;
       this.isCameraActive = true;
+      this.shouldDraw = true; // Разрешить отрисовку
       this.updateUI(true);
 
       this.processVideo();
@@ -51,24 +53,40 @@ class CameraManager {
   }
 
   stopCamera() {
+    this.isCameraActive = false;
+    this.shouldDraw = false; // Запретить отрисовку
+    
     if (this.stream) {
       this.stream.getTracks().forEach(track => track.stop());
       this.stream = null;
     }
     this.videoElement.srcObject = null;
-    this.isCameraActive = false;
     this.updateUI(false);
 
-    // Очистка всех canvas
-    const clearCanvas = (id) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const ctx = el.getContext('2d');
-      if (ctx) ctx.clearRect(0, 0, el.width, el.height);
+    // Многократная очистка с интервалами
+    const clearAllCanvases = () => {
+      const canvases = ['camera-canvas', 'canvas-overlay'];
+      canvases.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const ctx = el.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, el.width, el.height);
+          // Дополнительно заливаем прозрачным цветом
+          ctx.fillStyle = 'transparent';
+          ctx.fillRect(0, 0, el.width, el.height);
+        }
+      });
     };
 
-    clearCanvas('camera-canvas');
-    clearCanvas('canvas-overlay');
+    // Очищаем сразу
+    clearAllCanvases();
+    
+    // И еще раз через небольшие интервалы на случай асинхронных операций
+    setTimeout(clearAllCanvases, 50);
+    setTimeout(clearAllCanvases, 150);
+    setTimeout(clearAllCanvases, 300);
+    
     console.log('Камера остановлена');
   }
 
@@ -125,6 +143,8 @@ class CameraManager {
 
   // draw skeleton received from backend
   drawSkeletonOnCanvas(skeleton, mpSkeleton=null) {
+    if (!this.shouldDraw) return; // Не рисовать если остановлено
+    
     const ctx = this.overlayCanvas.getContext('2d');
     ctx.clearRect(0,0,this.overlayCanvas.width,this.overlayCanvas.height);
     if (!ctx) return;
@@ -133,7 +153,7 @@ class CameraManager {
     try {
       // draw small translucent background for text
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillRect(0, 0, 420, 36);
+      ctx.fillRect(0, 0, 110, 30);
 
       // If mpSkeleton provided (33 points) prefer to draw it — it matches MediaPipe demo
       if (mpSkeleton && Array.isArray(mpSkeleton) && mpSkeleton.length >= 33) {
@@ -225,7 +245,8 @@ class CameraManager {
 
   // Called whenever ws_client gets new prediction object
   onPredictionUpdate(data) {
-    if (!data) return;
+    if (!this.shouldDraw || !data) return; // Не обрабатывать данные если остановлено
+    
     // Prefer drawing mp_skeleton if available (matches MediaPipe local demo)
     const mpSk = data.mp_skeleton || null;
     const ntuSk = data.skeleton || null;
@@ -236,15 +257,13 @@ class CameraManager {
     if (ctx) {
       ctx.font = '18px Arial';
       ctx.fillStyle = 'white';
-      const pred = data.prediction || '—';
-      const conf = (typeof data.confidence === 'number') ? `${(data.confidence*100).toFixed(1)}%` : '-';
       const fps = data.fps || '-';
       // clear top-left area and draw
-      ctx.clearRect(0, 0, 420, 36);
+      ctx.clearRect(0, 0, 110, 30);
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(0, 0, 420, 36);
+      ctx.fillRect(0, 0, 110, 30);
       ctx.fillStyle = '#00FF00';
-      ctx.fillText(`Action: ${pred} (${conf})  FPS:${fps}`, 8, 22);
+      ctx.fillText(`FPS: ${fps}`, 8, 22);
     }
 
     // update side panel if exists
