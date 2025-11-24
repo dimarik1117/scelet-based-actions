@@ -70,7 +70,7 @@ img {
 .camera {
   display: flex;
   flex-direction: column;
-  gap: 25px;
+  gap: 20px;
   align-items: center;
 }
 .camera__title {
@@ -82,7 +82,8 @@ img {
 .camera__container {
   position: relative;
   width: 100%;
-  max-width: 500px;
+  height: 480px;
+  max-width: 640px;
   border: 3px solid #FFFFFF;
   border-radius: 15px;
   overflow: hidden;
@@ -94,19 +95,33 @@ img {
   }
 }
 .camera__video {
-  width: 100%;
-  height: auto;
+  width: 640px;
+  height: 480px;
   display: block;
-  transform: scaleX(-1);
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
 }
 .camera__canvas {
-  width: 100%;
-  height: auto;
+  width: 640px;
+  height: 480px;
   display: block;
   position: absolute;
   top: 0;
   left: 0;
   pointer-events: none;
+  z-index: 1;
+}
+.camera__canvas-overlay {
+  width: 640px;
+  height: 480px;
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 2;
 }
 .camera__controls {
   display: flex;
@@ -119,7 +134,7 @@ img {
   padding: 0;
 }
 .footer__wrapper {
-  padding: 10px;
+  padding: 9px;
   display: flex;
   justify-content: space-around;
   align-items: center;
@@ -140,7 +155,7 @@ img {
 }
 
 .header__wrapper {
-  padding: 10px;
+  padding: 9px;
   margin-top: 5px;
   display: flex;
   justify-content: space-around;
@@ -203,7 +218,7 @@ img {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 30px;
-  padding: 40px 0;
+  padding: 20px 0;
   align-items: start;
   min-height: 70vh;
 }
@@ -241,7 +256,7 @@ img {
 .result {
   display: flex;
   flex-direction: column;
-  gap: 25px;
+  gap: 20px;
   align-items: center;
 }
 .result__title {
